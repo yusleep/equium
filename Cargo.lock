@@ -1554,6 +1554,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "equium-fleet-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "solana-client",
+ "solana-sdk",
+ "solana-system-interface",
+]
+
+[[package]]
 name = "equium-wasm"
 version = "0.1.0"
 dependencies = [

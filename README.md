@@ -51,6 +51,7 @@ All three reference miners are first-class. They submit the same `mine` transact
 | **Browser** | [equium.xyz/mine](https://equium.xyz/mine) | No install, no RPC setup. Casual mining and trying things out. Built-in encrypted wallet stored in your browser. |
 | **Desktop app** | [equium.xyz/download](https://equium.xyz/download) | Native macOS / Windows / Linux. Encrypted local wallet (Argon2id + AES-256-GCM). Bring your own RPC. |
 | **CLI miner** | `clients/cli-miner` (see below) | Headless, server-friendly, single binary. Reads an existing Solana keypair file. |
+| **Fleet tools** | `clients/fleet-tools` | Local operator helper for generating worker wallets, dry-running SOL distribution, and supervising multiple CLI miners. |
 
 The browser miner is the easiest to try; the desktop app is the recommended steady-state setup; the CLI is what you want on a VPS or alongside other services.
 
@@ -82,6 +83,22 @@ $ equium-miner --rpc-url https://mainnet.helius-rpc.com/?api-key=YOUR_KEY --keyp
 ```
 
 A free Helius key (see [docs/rpc](https://equium.xyz/docs/rpc)) is recommended for sustained mining; the default public Solana endpoints rate-limit aggressively under load.
+
+## ✦ Fleet operator tools
+
+`clients/fleet-tools` adds a local-only helper binary named `equium-fleet` for
+running several CLI miners from one checkout. It can generate a fresh funding
+wallet plus worker wallets, inspect balances through your own Solana RPC,
+dry-run and execute funding-wallet-to-worker SOL distribution, and supervise
+multiple `equium-miner` child processes with JSONL logs.
+
+The tool stores generated keypairs under `.local/equium-fleet/`, which is
+ignored by git. Do not share that directory. Share the source code for review,
+then let each operator generate their own wallets and configure their own RPC.
+
+See [`clients/fleet-tools/README.md`](clients/fleet-tools/README.md) for the
+full safety checklist, build commands, agent handoff prompt, and operating
+flow.
 
 ## ✦ Where to find us
 

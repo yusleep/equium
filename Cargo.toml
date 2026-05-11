@@ -5,6 +5,7 @@ members = [
     "crates/equihash-core",
     "scripts/verify-bench/programs/verify-bench",
     "clients/cli-miner",
+    "clients/fleet-tools",
     "clients/web-miner/wasm",
 ]
 

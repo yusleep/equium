@@ -1,0 +1,19 @@
+[package]
+name = "equium-fleet-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local fleet tooling for Equium miners"
+
+[[bin]]
+name = "equium-fleet"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+solana-client = "2.1"
+solana-sdk = "2.1"
+solana-system-interface = "1.0.0"
