@@ -641,11 +641,12 @@ fn print_monitor_summary(run_dir: &Path, expected_workers: usize) -> Result<()> 
     let events = read_monitor_events(run_dir)?;
     let summary = summarize_monitor_events(&events, expected_workers);
     println!(
-        "[monitor] workers={}/{} seen={} exited={} rounds={} mined={} errors={} restarts={} last_event={} logs={}",
+        "[monitor] workers={}/{} seen={} exited={} failed={} rounds={} mined={} errors={} restarts={} last_event={} logs={}",
         summary.running_workers,
         summary.expected_workers,
         summary.seen_workers,
         summary.exited_workers,
+        summary.failed_workers,
         summary.rounds,
         summary.mined,
         summary.errors,

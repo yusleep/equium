@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,7 @@ pub struct MonitorSummary {
     pub seen_workers: usize,
     pub running_workers: usize,
     pub exited_workers: usize,
+    pub failed_workers: usize,
     pub rounds: usize,
     pub mined: usize,
     pub errors: usize,
@@ -315,7 +316,7 @@ pub fn summarize_monitor_events(
     expected_workers: usize,
 ) -> MonitorSummary {
     let mut seen_workers = HashSet::new();
-    let mut exited_workers = HashSet::new();
+    let mut worker_last_kind = HashMap::new();
     let mut rounds = 0usize;
     let mut mined = 0usize;
     let mut errors = 0usize;
@@ -324,6 +325,7 @@ pub fn summarize_monitor_events(
 
     for event in events {
         seen_workers.insert(event.worker.clone());
+        worker_last_kind.insert(event.worker.clone(), event.kind.clone());
         last_event_unix_ms = Some(last_event_unix_ms.map_or(event.ts_unix_ms, |last| {
             if event.ts_unix_ms > last {
                 event.ts_unix_ms
@@ -337,20 +339,27 @@ pub fn summarize_monitor_events(
             "mined" => mined += 1,
             "error" => errors += 1,
             "restart" => restarts += 1,
-            "exit" => {
-                exited_workers.insert(event.worker.clone());
-            }
             _ => {}
         }
     }
 
     let seen_workers_count = seen_workers.len();
-    let exited_workers_count = exited_workers.len();
+    let exited_workers_count = worker_last_kind
+        .values()
+        .filter(|kind| kind.as_str() == "exit")
+        .count();
+    let failed_workers_count = worker_last_kind
+        .values()
+        .filter(|kind| kind.as_str() == "error")
+        .count();
     MonitorSummary {
         expected_workers,
         seen_workers: seen_workers_count,
-        running_workers: seen_workers_count.saturating_sub(exited_workers_count),
+        running_workers: seen_workers_count
+            .saturating_sub(exited_workers_count)
+            .saturating_sub(failed_workers_count),
         exited_workers: exited_workers_count,
+        failed_workers: failed_workers_count,
         rounds,
         mined,
         errors,
@@ -623,11 +632,31 @@ mod tests {
         assert_eq!(summary.seen_workers, 2);
         assert_eq!(summary.running_workers, 1);
         assert_eq!(summary.exited_workers, 1);
+        assert_eq!(summary.failed_workers, 0);
         assert_eq!(summary.rounds, 1);
         assert_eq!(summary.mined, 1);
         assert_eq!(summary.errors, 1);
         assert_eq!(summary.restarts, 1);
         assert_eq!(summary.last_event_unix_ms, Some(300));
+    }
+
+    #[test]
+    fn monitor_summary_marks_workers_failed_when_error_is_final_state() {
+        let events = vec![
+            MonitorLogEvent::new(100, "worker-001", "supervisor", "start"),
+            MonitorLogEvent::new(110, "worker-001", "supervisor", "error"),
+            MonitorLogEvent::new(120, "worker-001", "supervisor", "restart"),
+            MonitorLogEvent::new(130, "worker-001", "supervisor", "start"),
+            MonitorLogEvent::new(140, "worker-001", "supervisor", "error"),
+        ];
+
+        let summary = summarize_monitor_events(&events, 1);
+
+        assert_eq!(summary.running_workers, 0);
+        assert_eq!(summary.exited_workers, 0);
+        assert_eq!(summary.failed_workers, 1);
+        assert_eq!(summary.errors, 2);
+        assert_eq!(summary.restarts, 1);
     }
 
     #[test]

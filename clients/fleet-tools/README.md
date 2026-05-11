@@ -124,7 +124,7 @@ target/release/equium-fleet mine fleet --workers all --max-restarts 2 --stagger-
 current run's JSONL logs and prints periodic aggregate lines like:
 
 ```text
-[monitor] workers=14/14 seen=14 exited=0 rounds=120 mined=1 errors=0 restarts=0 last_event=3s_ago logs=.local/equium-fleet/runs/run-...
+[monitor] workers=14/14 seen=14 exited=0 failed=0 rounds=120 mined=1 errors=0 restarts=0 last_event=3s_ago logs=.local/equium-fleet/runs/run-...
 ```
 
 The default monitor interval is 30 seconds. Tune or disable it with:
