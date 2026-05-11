@@ -120,6 +120,20 @@ Run every worker:
 target/release/equium-fleet mine fleet --workers all --max-restarts 2 --stagger-ms 250
 ```
 
+`mine fleet` starts a local monitor automatically. The monitor reads the
+current run's JSONL logs and prints periodic aggregate lines like:
+
+```text
+[monitor] workers=14/14 seen=14 exited=0 rounds=120 mined=1 errors=0 restarts=0 last_event=3s_ago logs=.local/equium-fleet/runs/run-...
+```
+
+The default monitor interval is 30 seconds. Tune or disable it with:
+
+```bash
+target/release/equium-fleet mine fleet --workers all --monitor-interval-secs 10
+target/release/equium-fleet mine fleet --workers all --monitor-interval-secs 0
+```
+
 Run the first 8 workers:
 
 ```bash
@@ -145,6 +159,7 @@ Supervisor options:
 - `--max-restarts N` restarts a failed miner process up to N times.
 - `--restart-delay-ms N` waits before restarting; default is `1000`.
 - `--stagger-ms N` delays each worker start by `N * worker_position` to reduce RPC startup spikes.
+- `--monitor-interval-secs N` prints aggregate mining status every N seconds; default is `30`, and `0` disables it.
 
 Logs are written under:
 

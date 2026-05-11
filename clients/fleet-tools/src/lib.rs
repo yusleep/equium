@@ -64,6 +64,43 @@ pub struct MinerLogEvent {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorLogEvent {
+    pub ts_unix_ms: u128,
+    pub worker: String,
+    pub stream: String,
+    pub kind: String,
+}
+
+impl MonitorLogEvent {
+    pub fn new(
+        ts_unix_ms: u128,
+        worker: impl Into<String>,
+        stream: impl Into<String>,
+        kind: impl Into<String>,
+    ) -> Self {
+        Self {
+            ts_unix_ms,
+            worker: worker.into(),
+            stream: stream.into(),
+            kind: kind.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorSummary {
+    pub expected_workers: usize,
+    pub seen_workers: usize,
+    pub running_workers: usize,
+    pub exited_workers: usize,
+    pub rounds: usize,
+    pub mined: usize,
+    pub errors: usize,
+    pub restarts: usize,
+    pub last_event_unix_ms: Option<u128>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SupervisorConfig {
     pub max_restarts: u32,
@@ -270,6 +307,55 @@ pub fn classify_miner_line(line: &str) -> MinerLogEvent {
     MinerLogEvent {
         kind: kind.to_string(),
         message: trimmed.to_string(),
+    }
+}
+
+pub fn summarize_monitor_events(
+    events: &[MonitorLogEvent],
+    expected_workers: usize,
+) -> MonitorSummary {
+    let mut seen_workers = HashSet::new();
+    let mut exited_workers = HashSet::new();
+    let mut rounds = 0usize;
+    let mut mined = 0usize;
+    let mut errors = 0usize;
+    let mut restarts = 0usize;
+    let mut last_event_unix_ms = None;
+
+    for event in events {
+        seen_workers.insert(event.worker.clone());
+        last_event_unix_ms = Some(last_event_unix_ms.map_or(event.ts_unix_ms, |last| {
+            if event.ts_unix_ms > last {
+                event.ts_unix_ms
+            } else {
+                last
+            }
+        }));
+
+        match event.kind.as_str() {
+            "round" => rounds += 1,
+            "mined" => mined += 1,
+            "error" => errors += 1,
+            "restart" => restarts += 1,
+            "exit" => {
+                exited_workers.insert(event.worker.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let seen_workers_count = seen_workers.len();
+    let exited_workers_count = exited_workers.len();
+    MonitorSummary {
+        expected_workers,
+        seen_workers: seen_workers_count,
+        running_workers: seen_workers_count.saturating_sub(exited_workers_count),
+        exited_workers: exited_workers_count,
+        rounds,
+        mined,
+        errors,
+        restarts,
+        last_event_unix_ms,
     }
 }
 
@@ -517,6 +603,31 @@ mod tests {
 
         let other = classify_miner_line("   miner     AgbS-AEQM");
         assert_eq!(other.kind, "info");
+    }
+
+    #[test]
+    fn monitor_summary_counts_workers_and_event_kinds() {
+        let events = vec![
+            MonitorLogEvent::new(100, "worker-001", "supervisor", "start"),
+            MonitorLogEvent::new(110, "worker-002", "supervisor", "start"),
+            MonitorLogEvent::new(150, "worker-001", "stdout", "round"),
+            MonitorLogEvent::new(200, "worker-001", "stdout", "mined"),
+            MonitorLogEvent::new(230, "worker-002", "stderr", "error"),
+            MonitorLogEvent::new(240, "worker-002", "supervisor", "restart"),
+            MonitorLogEvent::new(300, "worker-002", "supervisor", "exit"),
+        ];
+
+        let summary = summarize_monitor_events(&events, 2);
+
+        assert_eq!(summary.expected_workers, 2);
+        assert_eq!(summary.seen_workers, 2);
+        assert_eq!(summary.running_workers, 1);
+        assert_eq!(summary.exited_workers, 1);
+        assert_eq!(summary.rounds, 1);
+        assert_eq!(summary.mined, 1);
+        assert_eq!(summary.errors, 1);
+        assert_eq!(summary.restarts, 1);
+        assert_eq!(summary.last_event_unix_ms, Some(300));
     }
 
     #[test]

@@ -3,6 +3,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::str::FromStr;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,11 +15,11 @@ use clap::{Parser, Subcommand};
 use equium_fleet_tools::{
     agent_next_actions, batch_transfers, build_manifest_with_pubkeys, check_distribution_funding,
     classify_miner_line, default_fleet_dir, lamports_to_sol, plan_distribution, select_workers,
-    should_restart_worker, sol_to_lamports, worker_start_delay_ms, AgentStatusInput,
-    DistributionPlan, FleetManifest, MinerLogEvent, PlannedTransfer, SupervisorConfig, WalletEntry,
-    WorkerBalance,
+    should_restart_worker, sol_to_lamports, summarize_monitor_events, worker_start_delay_ms,
+    AgentStatusInput, DistributionPlan, FleetManifest, MinerLogEvent, MonitorLogEvent,
+    PlannedTransfer, SupervisorConfig, WalletEntry, WorkerBalance,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::commitment_config::CommitmentConfig;
 use solana_sdk::pubkey::Pubkey;
@@ -109,10 +113,12 @@ enum MineCommands {
         restart_delay_ms: u64,
         #[arg(long, default_value_t = 0)]
         stagger_ms: u64,
+        #[arg(long, default_value_t = 30)]
+        monitor_interval_secs: u64,
     },
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct JsonLogLine {
     ts_unix_ms: u128,
     worker: String,
@@ -193,6 +199,7 @@ fn main() -> Result<()> {
                 max_restarts,
                 restart_delay_ms,
                 stagger_ms,
+                monitor_interval_secs,
             } => mine_fleet(
                 &fleet_dir,
                 rpc_url,
@@ -204,6 +211,7 @@ fn main() -> Result<()> {
                     restart_delay_ms,
                     stagger_ms,
                 },
+                monitor_interval_secs,
             ),
         },
     }
@@ -539,6 +547,7 @@ fn mine_fleet(
     miner_bin: &Path,
     max_blocks: Option<u64>,
     supervisor: SupervisorConfig,
+    monitor_interval_secs: u64,
 ) -> Result<()> {
     let rpc_url = rpc_url_value(rpc_url)?;
     let manifest = read_manifest(root)?;
@@ -553,6 +562,9 @@ fn mine_fleet(
     let run_dir = root.join("runs").join(format!("run-{}", now_unix_secs()));
     fs::create_dir_all(&run_dir).with_context(|| format!("create {}", run_dir.display()))?;
     println!("run logs: {}", run_dir.display());
+
+    let worker_count = workers.len();
+    let monitor = start_monitor(&run_dir, worker_count, monitor_interval_secs);
 
     let mut failed = false;
     let mut handles = Vec::new();
@@ -581,10 +593,119 @@ fn mine_fleet(
             }
         }
     }
+    let _ = print_monitor_summary(&run_dir, worker_count);
+    stop_monitor(monitor);
     if failed {
         bail!("one or more miners exited unsuccessfully");
     }
     Ok(())
+}
+
+struct MonitorHandle {
+    stop: Arc<AtomicBool>,
+    handle: JoinHandle<()>,
+}
+
+fn start_monitor(
+    run_dir: &Path,
+    expected_workers: usize,
+    interval_secs: u64,
+) -> Option<MonitorHandle> {
+    if interval_secs == 0 {
+        return None;
+    }
+
+    let run_dir = run_dir.to_path_buf();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let handle = thread::spawn(move || {
+        while !thread_stop.load(Ordering::Relaxed) {
+            if let Err(e) = print_monitor_summary(&run_dir, expected_workers) {
+                eprintln!("[monitor] read {}: {e:#}", run_dir.display());
+            }
+            sleep_monitor_interval(interval_secs, &thread_stop);
+        }
+    });
+
+    Some(MonitorHandle { stop, handle })
+}
+
+fn stop_monitor(monitor: Option<MonitorHandle>) {
+    if let Some(monitor) = monitor {
+        monitor.stop.store(true, Ordering::Relaxed);
+        let _ = monitor.handle.join();
+    }
+}
+
+fn print_monitor_summary(run_dir: &Path, expected_workers: usize) -> Result<()> {
+    let events = read_monitor_events(run_dir)?;
+    let summary = summarize_monitor_events(&events, expected_workers);
+    println!(
+        "[monitor] workers={}/{} seen={} exited={} rounds={} mined={} errors={} restarts={} last_event={} logs={}",
+        summary.running_workers,
+        summary.expected_workers,
+        summary.seen_workers,
+        summary.exited_workers,
+        summary.rounds,
+        summary.mined,
+        summary.errors,
+        summary.restarts,
+        format_last_event_age(summary.last_event_unix_ms),
+        run_dir.display(),
+    );
+    Ok(())
+}
+
+fn sleep_monitor_interval(interval_secs: u64, stop: &AtomicBool) {
+    let mut slept = 0u64;
+    while slept < interval_secs && !stop.load(Ordering::Relaxed) {
+        let remaining = interval_secs - slept;
+        let step = remaining.min(1);
+        thread::sleep(Duration::from_secs(step));
+        slept += step;
+    }
+}
+
+fn read_monitor_events(run_dir: &Path) -> Result<Vec<MonitorLogEvent>> {
+    let mut events = Vec::new();
+    if !run_dir.exists() {
+        return Ok(events);
+    }
+
+    for entry in fs::read_dir(run_dir).with_context(|| format!("read {}", run_dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let raw = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        for line in raw.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(log) = serde_json::from_str::<JsonLogLine>(line) else {
+                continue;
+            };
+            events.push(MonitorLogEvent::new(
+                log.ts_unix_ms,
+                log.worker,
+                log.stream,
+                log.kind,
+            ));
+        }
+    }
+
+    Ok(events)
+}
+
+fn format_last_event_age(last_event_unix_ms: Option<u128>) -> String {
+    match last_event_unix_ms {
+        Some(last) => {
+            let age_ms = now_unix_ms().saturating_sub(last);
+            format!("{}s_ago", age_ms / 1_000)
+        }
+        None => "none".to_string(),
+    }
 }
 
 fn supervise_worker(
