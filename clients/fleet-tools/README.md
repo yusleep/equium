@@ -114,6 +114,24 @@ worker top-ups plus the estimated fee reserve.
 
 ## Run Miners
 
+If the protocol is not open yet, run the launch watcher instead of starting
+miners directly. It polls the on-chain `EquiumConfig.mining_open` flag and
+starts the fleet immediately after the project opens mining:
+
+```bash
+target/release/equium-fleet \
+  --fleet-dir .local/equium-fleet-14 \
+  watch launch \
+  --workers all \
+  --max-restarts 2 \
+  --stagger-ms 250 \
+  --monitor-interval-secs 30 \
+  --poll-interval-secs 2
+```
+
+`watch launch` only reads chain state while waiting. It does not sign or
+broadcast transactions until `mining_open=true` and the fleet miner starts.
+
 Run every worker:
 
 ```bash
@@ -244,8 +262,12 @@ target/release/equium-fleet wallets create --workers 32
 target/release/equium-fleet wallets status
 target/release/equium-fleet wallets distribute --per-worker-sol 0.03 --batch-size 8
 
-# Only after manually confirming the dry-run:
+# Only after manually confirming the dry-run.
 target/release/equium-fleet wallets distribute --per-worker-sol 0.03 --batch-size 8 --live
 
-target/release/equium-fleet mine fleet --workers all --max-restarts 2 --stagger-ms 250
+# If mining is not open yet, leave this watcher running.
+target/release/equium-fleet --fleet-dir .local/equium-fleet-14 watch launch --workers all --max-restarts 2 --stagger-ms 250
+
+# If mining is already open, you can start directly instead.
+target/release/equium-fleet --fleet-dir .local/equium-fleet-14 mine fleet --workers all --max-restarts 2 --stagger-ms 250
 ```

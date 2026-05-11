@@ -10,14 +10,16 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use anchor_lang::AccountDeserialize;
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
+use equium::state::{EquiumConfig, CONFIG_SEED};
 use equium_fleet_tools::{
     agent_next_actions, batch_transfers, build_manifest_with_pubkeys, check_distribution_funding,
     classify_miner_line, default_fleet_dir, lamports_to_sol, plan_distribution, select_workers,
     should_restart_worker, sol_to_lamports, summarize_monitor_events, worker_start_delay_ms,
-    AgentStatusInput, DistributionPlan, FleetManifest, MinerLogEvent, MonitorLogEvent,
-    PlannedTransfer, SupervisorConfig, WalletEntry, WorkerBalance,
+    AgentStatusInput, DistributionPlan, FleetManifest, LaunchStatus, MinerLogEvent,
+    MonitorLogEvent, PlannedTransfer, SupervisorConfig, WalletEntry, WorkerBalance,
 };
 use serde::{Deserialize, Serialize};
 use solana_client::rpc_client::RpcClient;
@@ -57,6 +59,10 @@ enum Commands {
     Mine {
         #[command(subcommand)]
         command: MineCommands,
+    },
+    Watch {
+        #[command(subcommand)]
+        command: WatchCommands,
     },
 }
 
@@ -115,6 +121,30 @@ enum MineCommands {
         stagger_ms: u64,
         #[arg(long, default_value_t = 30)]
         monitor_interval_secs: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum WatchCommands {
+    Launch {
+        #[arg(long)]
+        rpc_url: Option<String>,
+        #[arg(long, default_value = "all")]
+        workers: String,
+        #[arg(long, default_value = "target/release/equium-miner")]
+        miner_bin: PathBuf,
+        #[arg(long)]
+        max_blocks: Option<u64>,
+        #[arg(long, default_value_t = 2)]
+        max_restarts: u32,
+        #[arg(long, default_value_t = 1_000)]
+        restart_delay_ms: u64,
+        #[arg(long, default_value_t = 250)]
+        stagger_ms: u64,
+        #[arg(long, default_value_t = 30)]
+        monitor_interval_secs: u64,
+        #[arg(long, default_value_t = 2)]
+        poll_interval_secs: u64,
     },
 }
 
@@ -212,6 +242,32 @@ fn main() -> Result<()> {
                     stagger_ms,
                 },
                 monitor_interval_secs,
+            ),
+        },
+        Commands::Watch { command } => match command {
+            WatchCommands::Launch {
+                rpc_url,
+                workers,
+                miner_bin,
+                max_blocks,
+                max_restarts,
+                restart_delay_ms,
+                stagger_ms,
+                monitor_interval_secs,
+                poll_interval_secs,
+            } => watch_launch(
+                &fleet_dir,
+                rpc_url,
+                &workers,
+                &miner_bin,
+                max_blocks,
+                SupervisorConfig {
+                    max_restarts,
+                    restart_delay_ms,
+                    stagger_ms,
+                },
+                monitor_interval_secs,
+                poll_interval_secs,
             ),
         },
     }
@@ -599,6 +655,90 @@ fn mine_fleet(
         bail!("one or more miners exited unsuccessfully");
     }
     Ok(())
+}
+
+fn watch_launch(
+    root: &Path,
+    rpc_url: Option<String>,
+    workers_selector: &str,
+    miner_bin: &Path,
+    max_blocks: Option<u64>,
+    supervisor: SupervisorConfig,
+    monitor_interval_secs: u64,
+    poll_interval_secs: u64,
+) -> Result<()> {
+    if poll_interval_secs == 0 {
+        bail!("--poll-interval-secs must be greater than zero");
+    }
+
+    let rpc_url = rpc_url_value(rpc_url)?;
+    let rpc = RpcClient::new_with_commitment(rpc_url.clone(), CommitmentConfig::confirmed());
+    let (config_pda, _) = Pubkey::find_program_address(&[CONFIG_SEED], &equium::ID);
+    println!(
+        "[watch] waiting for Equium mining_open=true at config {}",
+        config_pda
+    );
+    println!(
+        "[watch] poll interval: {}s; fleet dir: {}; workers: {}",
+        poll_interval_secs,
+        root.display(),
+        workers_selector
+    );
+
+    let mut last_summary = String::new();
+    loop {
+        match fetch_launch_status(&rpc) {
+            Ok(status) => {
+                let summary = status.summary();
+                if summary != last_summary {
+                    println!("[watch] {summary}");
+                    last_summary = summary;
+                }
+                if status.should_start_mining() {
+                    println!("[watch] launch detected; starting fleet mining");
+                    break;
+                }
+            }
+            Err(e) => eprintln!("[watch] status check failed: {e:#}"),
+        }
+        thread::sleep(Duration::from_secs(poll_interval_secs));
+    }
+
+    mine_fleet(
+        root,
+        Some(rpc_url),
+        workers_selector,
+        miner_bin,
+        max_blocks,
+        supervisor,
+        monitor_interval_secs,
+    )
+}
+
+fn fetch_launch_status(rpc: &RpcClient) -> Result<LaunchStatus> {
+    let (config_pda, _) = Pubkey::find_program_address(&[CONFIG_SEED], &equium::ID);
+    let response = rpc
+        .get_account_with_commitment(&config_pda, CommitmentConfig::confirmed())
+        .with_context(|| format!("fetch config account {config_pda}"))?;
+    let Some(account) = response.value else {
+        return Ok(LaunchStatus::ConfigMissing);
+    };
+    if account.owner != equium::ID {
+        return Ok(LaunchStatus::ConfigMissing);
+    }
+
+    let mut data = account.data.as_slice();
+    let cfg = EquiumConfig::try_deserialize(&mut data)
+        .with_context(|| format!("deserialize config account {config_pda}"))?;
+    if cfg.mining_open {
+        Ok(LaunchStatus::MiningOpen {
+            block_height: cfg.block_height,
+        })
+    } else {
+        Ok(LaunchStatus::MiningClosed {
+            block_height: cfg.block_height,
+        })
+    }
 }
 
 struct MonitorHandle {

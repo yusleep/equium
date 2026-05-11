@@ -1557,8 +1557,10 @@ dependencies = [
 name = "equium-fleet-tools"
 version = "0.1.0"
 dependencies = [
+ "anchor-lang",
  "anyhow",
  "clap",
+ "equium",
  "serde",
  "serde_json",
  "solana-client",

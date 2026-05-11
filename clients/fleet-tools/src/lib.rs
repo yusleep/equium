@@ -120,6 +120,31 @@ pub struct AgentStatusInput {
     pub planned_total_lamports: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaunchStatus {
+    ConfigMissing,
+    MiningClosed { block_height: u64 },
+    MiningOpen { block_height: u64 },
+}
+
+impl LaunchStatus {
+    pub fn should_start_mining(&self) -> bool {
+        matches!(self, LaunchStatus::MiningOpen { .. })
+    }
+
+    pub fn summary(&self) -> String {
+        match self {
+            LaunchStatus::ConfigMissing => "config missing".to_string(),
+            LaunchStatus::MiningClosed { block_height } => {
+                format!("mining closed at block #{block_height}")
+            }
+            LaunchStatus::MiningOpen { block_height } => {
+                format!("mining open at block #{block_height}")
+            }
+        }
+    }
+}
+
 pub fn worker_name(index: usize) -> String {
     format!("worker-{index:03}")
 }
@@ -657,6 +682,22 @@ mod tests {
         assert_eq!(summary.failed_workers, 1);
         assert_eq!(summary.errors, 2);
         assert_eq!(summary.restarts, 1);
+    }
+
+    #[test]
+    fn launch_status_starts_only_when_mining_is_open() {
+        assert!(!LaunchStatus::ConfigMissing.should_start_mining());
+        assert!(!LaunchStatus::MiningClosed { block_height: 0 }.should_start_mining());
+        assert!(LaunchStatus::MiningOpen { block_height: 7 }.should_start_mining());
+
+        assert_eq!(
+            LaunchStatus::MiningClosed { block_height: 3 }.summary(),
+            "mining closed at block #3"
+        );
+        assert_eq!(
+            LaunchStatus::MiningOpen { block_height: 4 }.summary(),
+            "mining open at block #4"
+        );
     }
 
     #[test]
